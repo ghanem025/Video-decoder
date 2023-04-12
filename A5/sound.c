@@ -21,12 +21,11 @@
 
 #define INBUF_SIZE 4096
 
-#define FRAME_BUFFER_SIZE 1000
+#define FRAME_BUFFER_SIZE 10
 
 AVFrame* buffer[FRAME_BUFFER_SIZE];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
-
 
 unsigned int r=0, w=0;
 int framerate = 30;
@@ -56,8 +55,9 @@ static void yuvToRgbFrame(AVFrame *inputFrame, AVFrame *outputFrame) {
 	          outputFrame->data, outputFrame->linesize);
 }
 
-static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt)
+static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt, pa_simple *s,AVCodecContext *audio_codec_ctx, int audio_stream_index)
 {
+	audio_codec_ctx = NULL;
 	char buf[1024];
 	int ret;
 
@@ -85,6 +85,11 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt)
 		}
 
 		buffer[(w++) % FRAME_BUFFER_SIZE] = decode_frame;
+
+		if (pkt->stream_index == audio_stream_index) {
+        	avcodec_send_packet(audio_codec_ctx, pkt);
+			pa_simple_write(s, frame->data[0], frame->linesize[0]/2, NULL);
+        }
 
 		pthread_cond_signal(&condition);
 		pthread_mutex_unlock(&mutex);
@@ -211,8 +216,8 @@ int decode_video(int argc, char **argv, int pas)
 	AVPacket *packet = av_packet_alloc();
 	while(av_read_frame(pFormatCtx, packet)>=0) {
 
-		if(packet->stream_index==videoStream) {
-			decode(pCodecCtx, frame, packet);
+		if(packet->stream_index==video_stream_index) {
+			decode(pCodecCtx, frame, packet, s, audio_codec_ctx, audio_stream_index);
 		}
 		if (packet->stream_index == audio_stream_index) {
             avcodec_send_packet(audio_codec_ctx, packet);
@@ -316,9 +321,6 @@ void activate(GtkApplication *app, gpointer user_data) {
     avcodec_parameters_to_context(pCodecCtx, pFormatCtx->streams[videoStream]->codecpar);
 
     avcodec_open2(pCodecCtx, pCodec, NULL);
-
-
-
 
 	GtkWidget *window, *box, *drawingArea;
 	window = gtk_application_window_new(app);
