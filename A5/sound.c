@@ -92,78 +92,6 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt)
 	}
 }
 
-void state_callback(pa_context *c, void *userdata) {
-	int *pa_ready = userdata;
-	switch (pa_context_get_state(c)) {
-		case PA_CONTEXT_READY:
-			*pa_ready = 1;
-			break;
-		case PA_CONTEXT_FAILED:
-		case PA_CONTEXT_TERMINATED:
-			pa_mainloop_free(mainloop);
-			break;
-		default:
-			break;
-	}
-}
-
-
-
-void context_state_callback(pa_context *context, void *userdata) {
-	int *pa_ready = userdata;
-    pa_context_state_t state = pa_context_get_state(context);
-    switch (state) {
-        case PA_CONTEXT_READY:
-            printf("Context is ready\n");
-            // Do any necessary setup with the context and stream here
-            break;
-        case PA_CONTEXT_TERMINATED:
-            printf("Context has been terminated\n");
-            // Clean up and exit the program
-            break;
-        case PA_CONTEXT_FAILED:
-            printf("Context has failed\n");
-            // Clean up and exit the program
-            break;
-        default:
-            printf("Unknown context state\n");
-            break;
-    }
-}
-
-
-
-
-void stream_request_callback(pa_stream *stream, size_t length, void *userdata) {
-    // This callback will be called when the server is ready to accept more data
-    // in the buffer. You can use it to send more data to the server.
-    // 'stream' is the stream that needs more data.
-    // 'length' is the amount of free space available in the buffer, in bytes.
-    // 'userdata' is a pointer to any data you passed to the callback function when
-    // registering it (see pa_stream_set_write_callback).
-
-    // Example: fill the buffer with silence
-    float silence[length / sizeof(float)];
-    memset(silence, 0, length);
-    pa_stream_write(stream, silence, length, NULL, 0, PA_SEEK_RELATIVE);
-}
-
-
-static void stream_write_callback(pa_stream *s, size_t length, void *userdata) {
-    /* Retrieve the next chunk of data from your input source */
-    uint8_t *data = NULL;  // Pointer to the data buffer
-    size_t size = 0;       // Size of the data buffer
-    
-    /* Write the data to the stream */
-    int error = pa_stream_write(s, data, size, NULL, 0, PA_SEEK_RELATIVE);
-    
-    if (error != 0) {
-        /* Handle the error */
-        fprintf(stderr, "Error writing to stream: %s\n", pa_strerror(error));
-    }
-}
-
-
 
 int decode_video(int argc, char **argv, int pas)
 {
@@ -260,53 +188,16 @@ int decode_video(int argc, char **argv, int pas)
 	}
     int err;
 
-    pa_context *pa_context = NULL;
-    pa_sample_spec pa_sample_spec = {
-    .format = PA_SAMPLE_FLOAT32LE,
-    .rate = audio_codec_ctx->sample_rate,
-    .channels = 1
-    };
-	pa_buffer_attr pa_buffer_attr = {
-    .maxlength = 8192,
-    .fragsize = (uint32_t) - 1,
-    .prebuf = 0,
-    .tlength = 8192,
-    .minreq = 0
-	};
-    
-    int pa_error = 0;
-
-	mainloop = pa_mainloop_new();
-	pa_context = pa_context_new(pa_mainloop_get_api(mainloop), "Playback");
-
-	if (pa_context_connect(pa_context, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL) < 0) {
-		fprintf(stderr, "Pulse audio context failed to connect\n");
-		return -1;
-	}
-	puts("Connected to pulseaudio context successfully");
-	// Wait for pulse to be ready
-	int pa_ready = 0;
-
-	pa_context_set_state_callback(pa_context, state_callback, &pa_ready);
-	while (pa_ready == 0) {
-		printf("HI EEE HI");
-		pa_mainloop_iterate(mainloop, 1, NULL);
-	}
+	pa_simple *s;
+	pa_sample_spec ss;
 	
-	pa_stream *stream = NULL;
-	
-	if (!(stream = pa_stream_new(pa_context, "Playback", &pa_sample_spec, NULL))) {
-		puts("pa_stream_new failed");
-		return -1;
-	}
+	ss.format = PA_SAMPLE_FLOAT32;
+	ss.channels = 1;
+	ss.rate = audio_codec_ctx->sample_rate;
+	int pa_error =0;
+    s = pa_simple_new(NULL, "ffmpeg", PA_STREAM_PLAYBACK, NULL, "playback", &ss, NULL, NULL, NULL);
 
-	pa_stream_set_write_callback(stream, stream_write_callback, NULL);
-	pa_stream_set_buffer_attr(stream, &pa_buffer_attr, NULL, NULL);
-	/* Connect the stream to the default PulseAudio device */
-	pa_stream_connect_playback(stream, NULL, &pa_buffer_attr, PA_STREAM_NOFLAGS, NULL, NULL);
-
-
-    if (pa_context == NULL) {
+    if (s == NULL) {
 		fprintf(stderr, "Error: %s\n", pa_strerror(pa_error));
 		exit(1);
     }
@@ -326,29 +217,19 @@ int decode_video(int argc, char **argv, int pas)
 		if (packet->stream_index == audio_stream_index) {
             avcodec_send_packet(audio_codec_ctx, packet);
             while ((ret = avcodec_receive_frame(audio_codec_ctx, frame)) == 0) {
-				pa_stream_write(stream, frame->data[0], frame->linesize[0], NULL, 0, PA_SEEK_RELATIVE);
+				pa_simple_write(s, frame->data[0], frame->linesize[0]/2, NULL);
             }
         }
 
 	}
 
     avcodec_flush_buffers(audio_codec_ctx);
-    // pa_simple_drain(pa_context, NULL);
-
-	pa_stream_drain(stream, NULL, NULL);
-
-	/* Disconnect the stream */
-	pa_stream_disconnect(stream);
-
-	/* Free the stream */
-	pa_stream_unref(stream);
-
 	avcodec_close(pCodecCtx);
 	av_frame_free(&frame);
 	av_packet_free(&packet);
     avcodec_free_context(&audio_codec_ctx);
     avformat_close_input(&input_ctx);
-    // pa_simple_free(pa_context);
+
 
 	return 0;
 }
