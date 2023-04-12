@@ -77,7 +77,6 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt, pa_si
 			fprintf(stderr, "Error during decoding\n");
 			exit(1);
 		}
-        // printf("saving frame %3d\n", dec_ctx->frame_number);
 		yuvToRgbFrame(frame, decode_frame);
 		pthread_mutex_lock(&mutex);
 		if(w == r + FRAME_BUFFER_SIZE){
@@ -85,11 +84,6 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt, pa_si
 		}
 
 		buffer[(w++) % FRAME_BUFFER_SIZE] = decode_frame;
-
-		if (pkt->stream_index == audio_stream_index) {
-        	avcodec_send_packet(audio_codec_ctx, pkt);
-			pa_simple_write(s, frame->data[0], frame->linesize[0]/2, NULL);
-        }
 
 		pthread_cond_signal(&condition);
 		pthread_mutex_unlock(&mutex);
@@ -229,6 +223,8 @@ int decode_video(int argc, char **argv, int pas)
 	}
 
     avcodec_flush_buffers(audio_codec_ctx);
+	pa_simple_flush(s, NULL);
+	pa_simple_drain(s, NULL);
 	avcodec_close(pCodecCtx);
 	av_frame_free(&frame);
 	av_packet_free(&packet);
