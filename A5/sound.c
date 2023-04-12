@@ -293,6 +293,33 @@ static void on_window_closed(GtkWindow *window, gpointer user_data)
 }
 
 void activate(GtkApplication *app, gpointer user_data) {
+
+	AVFormatContext *pFormatCtx;
+	AVCodecContext *pCodecCtx;
+	const AVCodec *pCodec;
+	AVPacket *pkt;
+	AVFrame *pFrame;
+
+	const char *filename = (void *) user_data;
+		// Open the input file
+	printf("in activate %s\n", filename);
+    avformat_open_input(&pFormatCtx, filename, NULL, NULL);
+    // Get the codec parameters
+    avformat_find_stream_info(pFormatCtx, NULL);
+
+    // Find the video stream
+	pCodec = NULL;
+	int videoStream = av_find_best_stream(
+			pFormatCtx, AVMEDIA_TYPE_VIDEO, -1, -1, &pCodec, 0);
+
+	pCodecCtx = avcodec_alloc_context3(pCodec);
+    avcodec_parameters_to_context(pCodecCtx, pFormatCtx->streams[videoStream]->codecpar);
+
+    avcodec_open2(pCodecCtx, pCodec, NULL);
+
+
+
+
 	GtkWidget *window, *box, *drawingArea;
 	window = gtk_application_window_new(app);
 
@@ -303,7 +330,7 @@ void activate(GtkApplication *app, gpointer user_data) {
 	gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(drawingArea),
 	                               draw, NULL,
 	                               NULL);
-	gtk_widget_set_size_request(drawingArea, 1280, 720);
+	gtk_widget_set_size_request(drawingArea, pCodecCtx->width, pCodecCtx->height);
 
 	pthread_t thread_id;
 	pthread_create(&thread_id, NULL,decode_video_thread, (void *)&decode_args);
@@ -338,7 +365,7 @@ int main(int argc, char *argv[]) {
 	app = gtk_application_new("org.A2.example",
 	                          G_APPLICATION_DEFAULT_FLAGS);
 
-	g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
+	g_signal_connect(app, "activate", G_CALLBACK(activate), (void * ) argv[1]);
 	status = g_application_run(G_APPLICATION(app), 1, argv);
 	g_object_unref(app);
 
