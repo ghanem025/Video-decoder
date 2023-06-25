@@ -6,6 +6,7 @@ code into a binary:
 
 # -- COMPILE --
 ```bash
+$ cd A5
 $ ls
 main.c  Makefile  README.md  videos
 
