@@ -21,16 +21,16 @@
 
 #define INBUF_SIZE 4096
 
-#define FRAME_BUFFER_SIZE 1000
+#define FRAME_BUFFER_SIZE 10
 
 AVFrame* buffer[FRAME_BUFFER_SIZE];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
 
-
 unsigned int r=0, w=0;
 int framerate = 30;
 AVFrame *Free_frame = NULL;
+pa_mainloop *mainloop;
 
 struct decode_video_args{
 	int argc;
@@ -55,8 +55,9 @@ static void yuvToRgbFrame(AVFrame *inputFrame, AVFrame *outputFrame) {
 	          outputFrame->data, outputFrame->linesize);
 }
 
-static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt)
+static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt, pa_simple *s,AVCodecContext *audio_codec_ctx, int audio_stream_index)
 {
+	audio_codec_ctx = NULL;
 	char buf[1024];
 	int ret;
 
@@ -76,7 +77,6 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt)
 			fprintf(stderr, "Error during decoding\n");
 			exit(1);
 		}
-        // printf("saving frame %3d\n", dec_ctx->frame_number);
 		yuvToRgbFrame(frame, decode_frame);
 		pthread_mutex_lock(&mutex);
 		if(w == r + FRAME_BUFFER_SIZE){
@@ -90,6 +90,7 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt)
 
 	}
 }
+
 
 int decode_video(int argc, char **argv, int pas)
 {
@@ -186,24 +187,16 @@ int decode_video(int argc, char **argv, int pas)
 	}
     int err;
 
-    pa_simple *pa_context = NULL;
-    pa_sample_spec pa_sample_spec = {
-    .format = PA_SAMPLE_FLOAT32LE,
-    .rate = audio_codec_ctx->sample_rate,
-    .channels = 2
-    };
-    pa_buffer_attr pa_buffer_attr = {
-    .maxlength = (uint32_t)-1,
-    .fragsize = pa_frame_size(&pa_sample_spec),
-    .prebuf = (uint32_t)-1,
-    .tlength = (uint32_t)-1,
-    .minreq = (uint32_t)-1
-    };
-    
-    int pa_error = 0;
-    pa_context = pa_simple_new(NULL, "ffmpeg", PA_STREAM_PLAYBACK, NULL, "playback", &pa_sample_spec, NULL, &pa_buffer_attr, &pa_error);
+	pa_simple *s;
+	pa_sample_spec ss;
+	
+	ss.format = PA_SAMPLE_FLOAT32;
+	ss.channels = 1;
+	ss.rate = audio_codec_ctx->sample_rate;
+	int pa_error =0;
+    s = pa_simple_new(NULL, "ffmpeg", PA_STREAM_PLAYBACK, NULL, "playback", &ss, NULL, NULL, NULL);
 
-    if (pa_context == NULL) {
+    if (s == NULL) {
 		fprintf(stderr, "Error: %s\n", pa_strerror(pa_error));
 		exit(1);
     }
@@ -216,27 +209,28 @@ int decode_video(int argc, char **argv, int pas)
 
 	AVPacket *packet = av_packet_alloc();
 	while(av_read_frame(pFormatCtx, packet)>=0) {
-    
-		if(packet->stream_index==videoStream) {
-			decode(pCodecCtx, frame, packet);
+
+		if(packet->stream_index==video_stream_index) {
+			decode(pCodecCtx, frame, packet, s, audio_codec_ctx, audio_stream_index);
 		}
-        if (packet->stream_index == audio_stream_index) {
+		if (packet->stream_index == audio_stream_index) {
             avcodec_send_packet(audio_codec_ctx, packet);
             while ((ret = avcodec_receive_frame(audio_codec_ctx, frame)) == 0) {
-                pa_simple_write(pa_context, frame->data[0], frame->linesize[0], NULL);
+				pa_simple_write(s, frame->data[0], frame->linesize[0]/2, NULL);
             }
         }
+
 	}
 
     avcodec_flush_buffers(audio_codec_ctx);
-    pa_simple_drain(pa_context, NULL);
-
+	pa_simple_flush(s, NULL);
+	pa_simple_drain(s, NULL);
 	avcodec_close(pCodecCtx);
 	av_frame_free(&frame);
 	av_packet_free(&packet);
     avcodec_free_context(&audio_codec_ctx);
     avformat_close_input(&input_ctx);
-    pa_simple_free(pa_context);
+
 
 	return 0;
 }
@@ -300,6 +294,30 @@ static void on_window_closed(GtkWindow *window, gpointer user_data)
 }
 
 void activate(GtkApplication *app, gpointer user_data) {
+
+	AVFormatContext *pFormatCtx;
+	AVCodecContext *pCodecCtx;
+	const AVCodec *pCodec;
+	AVPacket *pkt;
+	AVFrame *pFrame;
+
+	const char *filename = (void *) user_data;
+		// Open the input file
+	printf("in activate %s\n", filename);
+    avformat_open_input(&pFormatCtx, filename, NULL, NULL);
+    // Get the codec parameters
+    avformat_find_stream_info(pFormatCtx, NULL);
+
+    // Find the video stream
+	pCodec = NULL;
+	int videoStream = av_find_best_stream(
+			pFormatCtx, AVMEDIA_TYPE_VIDEO, -1, -1, &pCodec, 0);
+
+	pCodecCtx = avcodec_alloc_context3(pCodec);
+    avcodec_parameters_to_context(pCodecCtx, pFormatCtx->streams[videoStream]->codecpar);
+
+    avcodec_open2(pCodecCtx, pCodec, NULL);
+
 	GtkWidget *window, *box, *drawingArea;
 	window = gtk_application_window_new(app);
 
@@ -310,7 +328,7 @@ void activate(GtkApplication *app, gpointer user_data) {
 	gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(drawingArea),
 	                               draw, NULL,
 	                               NULL);
-	gtk_widget_set_size_request(drawingArea, 1280, 720);
+	gtk_widget_set_size_request(drawingArea, pCodecCtx->width, pCodecCtx->height);
 
 	pthread_t thread_id;
 	pthread_create(&thread_id, NULL,decode_video_thread, (void *)&decode_args);
@@ -345,7 +363,7 @@ int main(int argc, char *argv[]) {
 	app = gtk_application_new("org.A2.example",
 	                          G_APPLICATION_DEFAULT_FLAGS);
 
-	g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
+	g_signal_connect(app, "activate", G_CALLBACK(activate), (void * ) argv[1]);
 	status = g_application_run(G_APPLICATION(app), 1, argv);
 	g_object_unref(app);
 
